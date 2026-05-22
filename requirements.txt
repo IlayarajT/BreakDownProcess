@@ -1,0 +1,49 @@
+# Requirements for BreakDown — Python 3.12
+# Generated from actual import analysis of project source files.
+
+# --- GUI ---
+PyQt6==6.7.1
+PyQt6-WebEngine==6.7.0
+
+# --- Document processing ---
+python-docx==1.2.0
+docxcompose==1.4.0
+docx2pdf==0.1.8
+mammoth~=1.5.1
+lxml==6.0.1
+
+# --- Data & XML ---
+pandas==2.2.2
+xmltodict==0.13.0
+PyYAML==6.0.2
+
+# --- Web automation ---
+selenium==4.7.2
+webdriver-manager==4.0.2
+beautifulsoup4==4.12.3
+
+# --- NLP / AI ---
+spacy==3.8.11
+fuzzywuzzy~=0.18.0
+langid==1.1.6
+biopython~=1.84
+ollama
+
+# --- Database ---
+mysql-connector-python~=8.0.33
+
+# --- Archive handling ---
+py7zr==1.1.0
+rarfile~=4.2
+
+# --- Windows / system ---
+pywin32==306
+psutil==6.0.0
+
+# --- Utilities ---
+watchdog==3.0.0
+schedule~=1.2.2
+titlecase~=2.4.1
+
+# --- XML transformation (Saxon XSLT) ---
+saxonpy==0.0.3
