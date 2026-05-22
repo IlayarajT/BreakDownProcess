@@ -11,7 +11,17 @@ import zipfile
 import atexit
 import glob
 
-from saxonc import PySaxonProcessor
+# saxonc (Excelsior JET runtime) is known to crash on this machine.
+# Import it conditionally and initialize LAZILY — only when a saxonc
+# transform is explicitly requested.  breakDownProcess.py always uses
+# insert_query_callouts_jar (Java subprocess) so the JET runtime is
+# never started in normal operation, preventing the 0xC0000409 crash.
+_SAXONC_AVAILABLE = False
+try:
+    from saxonc import PySaxonProcessor
+    _SAXONC_AVAILABLE = True
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Module-level Saxon processor — ONE JVM for the entire process lifetime.
@@ -29,6 +39,8 @@ from saxonc import PySaxonProcessor
 #      residual JET error state on the shared processor object.
 #   6. jet_dump_ files produced by the Excelsior JET runtime are cleaned up
 #      automatically at startup, after each transform, and at process exit.
+#
+# Initialization is LAZY: _saxon_proc is None until _get_proc() is first called.
 # ---------------------------------------------------------------------------
 
 
@@ -67,24 +79,35 @@ def _cleanup_jet_dumps(search_dirs=None):
 # Clean up any leftover jet_dump_ files from previous runs on module load
 _cleanup_jet_dumps()
 
-
-_saxon_proc = PySaxonProcessor(license=False)
-_saxon_proc.__enter__()
+_saxon_proc = None
+_atexit_registered = False
 
 
 def _atexit_cleanup():
     """Clean shutdown: close Saxon processor, then sweep jet_dump_ files."""
-    try:
-        _saxon_proc.__exit__(None, None, None)
-    except Exception:
-        pass
+    global _saxon_proc
+    if _saxon_proc is not None:
+        try:
+            _saxon_proc.__exit__(None, None, None)
+        except Exception:
+            pass
+        _saxon_proc = None
     _cleanup_jet_dumps()
 
-atexit.register(_atexit_cleanup)
 
-
-def _get_proc() -> PySaxonProcessor:
-    """Return the shared Saxon processor instance."""
+def _get_proc():
+    """Return the shared Saxon processor, initializing lazily on first call."""
+    global _saxon_proc, _atexit_registered
+    if _saxon_proc is None:
+        if not _SAXONC_AVAILABLE:
+            raise RuntimeError(
+                "saxonc is not available on this machine; use jar_transform instead"
+            )
+        _saxon_proc = PySaxonProcessor(license=False)
+        _saxon_proc.__enter__()
+        if not _atexit_registered:
+            atexit.register(_atexit_cleanup)
+            _atexit_registered = True
     return _saxon_proc
 
 

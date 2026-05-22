@@ -37,6 +37,94 @@ from version import __version__
 
 
 # ---------------------------------------------------------------------------
+#  SAGE styles loader — Python replacement for the VBA LoadSageStyles macro
+# ---------------------------------------------------------------------------
+
+def _find_sage_styles_template(configFolder, app_path):
+    """
+    Return the path of the best available SAGE styles source.
+    Prefers .docx (python-docx compatible); falls back to .dotx.
+    """
+    candidates = [
+        os.path.join(configFolder, "SupportingFiles", "SAGE_styles.docx"),
+        os.path.join(app_path,    "SupportingFiles", "SAGE_styles.docx"),
+        r"V:\TOOLS\BreakDown\SupportingFiles\SAGE_styles.docx",
+        r"D:\mProjects\BreakDown\SupportingFiles\SAGE_styles.docx",
+        os.path.join(configFolder, "SupportingFiles", "SAGE_styles.dotx"),
+        os.path.join(app_path,    "SupportingFiles", "SAGE_styles.dotx"),
+        r"V:\TOOLS\BreakDown\SupportingFiles\SAGE_styles.dotx",
+        r"D:\mProjects\BreakDown\SupportingFiles\SAGE_styles.dotx",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(
+        "SAGE styles template not found. Searched:\n" + "\n".join(candidates)
+    )
+
+
+def _open_template_as_docx(template_path):
+    """
+    Open a Word template as a python-docx Document.
+    .docx opens directly; .dotx is copied to a temp .docx with the
+    content-type fixed so python-docx accepts it.
+    """
+    import zipfile, tempfile, shutil
+    from docx import Document
+
+    if not template_path.lower().endswith(".dotx"):
+        return Document(template_path), None   # (doc, tmp_path)
+
+    # .dotx: copy to temp .docx and patch [Content_Types].xml
+    tmp = tempfile.mktemp(suffix=".docx")
+    shutil.copy2(template_path, tmp)
+    with zipfile.ZipFile(tmp, "a") as z:
+        ct = z.read("[Content_Types].xml").decode("utf-8")
+        ct = ct.replace(
+            "wordprocessingml.template.main+xml",
+            "wordprocessingml.document.main+xml",
+        )
+        z.writestr("[Content_Types].xml", ct)
+    return Document(tmp), tmp
+
+
+def _copy_all_sage_styles(template_path, docxfile):
+    """
+    Copy every style from template_path into docxfile.
+    Existing styles with the same name are replaced; new ones are appended.
+    Equivalent to VBA ActiveDocument.CopyStylesFromTemplate(…).
+    Returns the number of styles processed.
+    """
+    from copy import deepcopy
+    import os
+
+    tmpl, _tmp = _open_template_as_docx(template_path)
+    try:
+        from docx import Document
+        doc = Document(docxfile)
+
+        styles_elem = doc.styles._element
+        existing    = {s.name: s.element for s in doc.styles if s.name}
+
+        count = 0
+        for st in tmpl.styles:
+            if not st.name:
+                continue
+            new_elem = deepcopy(st.element)
+            if st.name in existing:
+                existing[st.name].getparent().replace(existing[st.name], new_elem)
+            else:
+                styles_elem.append(new_elem)
+            count += 1
+
+        doc.save(docxfile)
+        return count
+    finally:
+        if _tmp and os.path.exists(_tmp):
+            os.remove(_tmp)
+
+
+# ---------------------------------------------------------------------------
 #  MarkdownViewer  —  lightweight dialog to display .md files
 # ---------------------------------------------------------------------------
 class MarkdownViewer(QDialog):
@@ -1011,17 +1099,32 @@ class ParaStylerWorker(QThread):
                 break
         document.save(as_file)
 
+        # ── Step 4.5: Load SAGE styles via Python ───────────────────────
+        # VBA LoadSageStyles is unreliable: AutoFitTable often leaves Word
+        # in an error state (Forms focus issue) that blocks subsequent macros.
+        # Load styles directly with python-docx before Word touches the file.
+        self.status.emit("Loading SAGE styles...")
+        self.progress.emit(62)
+        try:
+            _tmpl_path = _find_sage_styles_template(configFolder, app_path)
+            _n = _copy_all_sage_styles(_tmpl_path, as_file)
+            print(f"[INFO] Loaded {_n} SAGE styles from {_tmpl_path}")
+        except Exception as _sse:
+            print(f"[WARN] SAGE style load failed: {_sse}")
+
         # ── Step 5: Word macros ─────────────────────────────────────────
+        # LoadSageStyles removed — handled by Step 4.5 above.
         self.status.emit("Running Word macros...")
         self.progress.emit(65)
 
         _macro_success = False
         _macro_last_err = None
+        _remaining_macros = [m for m in list_macros if m != "LoadSageStyles"]
         for _attempt in range(1, 4):          # up to 3 attempts
             try:
                 import pythoncom as _pc
                 _pc.CoInitialize()
-                process_doc.processDocFile(as_file, True, True, True, list_macros)
+                process_doc.processDocFile(as_file, True, True, True, _remaining_macros)
                 _macro_success = True
                 break
             except Exception as _macro_err:

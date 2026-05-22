@@ -847,6 +847,7 @@ class ApplyStyles:
 
     def check_normal_styles(self, docxfile):
         document = Document(docxfile)
+        available = {s.name for s in document.styles}
         for paragraph in document.paragraphs:
             style_name = paragraph.style.name
             pattern = "Normal"
@@ -858,22 +859,31 @@ class ApplyStyles:
                     text_ind_pattern = "^[A-Z].*"
                     text_pattern = "^[a-z0-9].*"
                     if re.match(cp_pattern, para_text):
-                        paragraph.style = "CP"
+                        if "CP" in available:
+                            paragraph.style = "CP"
                     elif re.match(text_ind_pattern, para_text):
-                        paragraph.style = "TEXT IND"
+                        if "TEXT IND" in available:
+                            paragraph.style = "TEXT IND"
                     else:
                         if re.search(r"ProgID\=\"Equation", para_xml):
                             if not re.match(text_pattern, para_text):
-                                paragraph.style = "EQ"
+                                if "EQ" in available:
+                                    paragraph.style = "EQ"
                         else:
-                            paragraph.style = "TEXT"
+                            if "TEXT" in available:
+                                paragraph.style = "TEXT"
                 elif len(para_text) == 0:
                     if re.search(r"ProgID\=\"Equation", para_xml):
-                        paragraph.style = "EQ"
+                        if "EQ" in available:
+                            paragraph.style = "EQ"
         document.save(docxfile)
 
     def cross_check_styles(self, docxfile):
         document = Document(docxfile)
+        available = {s.name for s in document.styles}
+        if "CP" not in available:
+            document.save(docxfile)
+            return
         for paragraph in document.paragraphs:
             para_text = paragraph.text
             if len(para_text) > 0:
