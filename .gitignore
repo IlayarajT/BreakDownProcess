@@ -1,0 +1,41 @@
+# Compiled / bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build & distribution
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Executables & binaries
+*.exe
+*.dll
+*.so
+*.pyd
+handle.exe
+handle64.exe
+handle64a.exe
+watcher.exe
+
+# Java / Saxon
+Saxon-HE/
+saxonpy/
+aspose-words/
+*.jar
+
+# IDE
+.idea/
+
+# Logs & temp
+*.log
+geckodriver.log
+.tmp.driveupload/
+temp/
+ERROR/
+
+# Misc
+.build_version
+__init__.py
+pyyaml/
