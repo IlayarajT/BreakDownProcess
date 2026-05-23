@@ -98,26 +98,62 @@ class BreakDownProcessor:
     # Content Analysis Methods
     # ====================
 
+    NONE_DECLARED_PATTERNS = [
+        # exact phrases / short forms
+        r"^\s*(none|nil|n\.?\s*a\.?|n/a|not\s+applicable|not\s+available|none\s+declared|none\s+to\s+declare|nothing\s+to\s+declare|no\s+statement|no\s+disclosure|no\s+disclosures|no\s+conflicts?|no\s+conflicts?\s+to\s+declare)\s*\.?\s*$",
+        # generic "no/none/nothing" followed by interest/conflict/funding/disclosure/support/statement
+        r"\b(no|none|not|nothing)\b[^.]*\b(conflicts?\s+of\s+interest|competing\s+interests?|conflicts?\s+of\s+interests?|conflicts?|disclosures?|statements?|funding|financial\s+(support|interest)|fund(ed|ing)\s+sources?|sponsorship)",
+        # "declares/declared/reports/states/affirms ... no/none/nothing"
+        r"\b(declare|declares|declared|declaration|reports?|states?|affirms?|confirms?)\b[^.]*\b(no|none|nothing)\b",
+        # "have/has no" patterns
+        r"\b(has|have|had)\s+no\b[^.]*\b(conflicts?|competing|disclosures?|interests?|funding|statements?)",
+        # "received no funding/support"
+        r"\breceived\s+no\b[^.]*\b(funding|financial|support|sponsorship)",
+    ]
+
+    def is_none_declared_text(self, text):
+        """Return True if text means 'none declared' / 'not applicable' / 'no statement'."""
+        if not text:
+            return False
+        normalized = text.strip()
+        if not normalized:
+            return False
+        for pattern in self.NONE_DECLARED_PATTERNS:
+            if re.search(pattern, normalized, re.IGNORECASE):
+                return True
+        return False
+
     def check_declaration_section(self, paragraphs):
-        """Check for declaration of conflicting interests section."""
+        """Check for declaration of conflicting interests section.
+
+        Returns:
+            (paragraphs, declaration_found, declaration_text, skip_default)
+            skip_default is True when an existing heading + 'none declared'-style
+            paragraph is already present; in that case existing paragraphs are
+            re-styled (Declaration_Title / Declaration_Para) and the caller
+            should NOT insert any default Declaration content.
+        """
         para_count = 0
         declaration_found = False
         declaration_text = ''
+        skip_default = False
         for paragraph in paragraphs:
             para_count = para_count + 1
             para_text = paragraph.text
             if re.search(
                     "Declaration of Conflicting Interests|Conflict of Interests statement|Conflict of Interests|Conflict of interest|Competing interest|Disclosure|Competing interests|Conflicts of Interest|Conflicting interests",
                     para_text, re.IGNORECASE):
-                paragraph.style = "Duplicate"
 
                 # Case 1: heading and content are in the SAME paragraph (e.g. "Conflicting interests: No conflicts...")
                 colon_split = re.split(r':\s*', para_text, maxsplit=1)
                 if len(colon_split) == 2 and colon_split[1].strip():
                     inline_text = colon_split[1].strip()
-                    if not re.search(
-                            "no conflicts of interest|no conflict of interest|no potential conflicts of interest|no potential conflict of interest|no competing interests|no competing interest",
-                            inline_text, re.IGNORECASE):
+                    if self.is_none_declared_text(inline_text):
+                        # Existing heading + 'none declared'-style content: keep as-is.
+                        paragraph.style = "Declaration_Para"
+                        skip_default = True
+                    else:
+                        paragraph.style = "Duplicate"
                         declaration_text = inline_text
                         declaration_found = True
 
@@ -125,14 +161,20 @@ class BreakDownProcessor:
                 elif para_count < len(paragraphs):
                     next_para = paragraphs[para_count]
                     next_para_text = next_para.text
-                    paragraphs[para_count].style = "Duplicate"
-                    if not re.search(
-                            "no conflicts of interest|no conflict of interest|no potential conflicts of interest|no potential conflict of interest|no competing interests|no competing interest",
-                            next_para_text, re.IGNORECASE):
+                    if self.is_none_declared_text(next_para_text):
+                        # Existing heading + 'none declared'-style content: keep as-is.
+                        paragraph.style = "Declaration_Title"
+                        next_para.style = "Declaration_Para"
+                        skip_default = True
+                    else:
+                        paragraph.style = "Duplicate"
+                        paragraphs[para_count].style = "Duplicate"
                         declaration_text = next_para_text
                         declaration_found = True
+                else:
+                    paragraph.style = "Duplicate"
                 break
-        return paragraphs, declaration_found, declaration_text
+        return paragraphs, declaration_found, declaration_text, skip_default
 
 
     def check_supplementary_material(self, paragraphs):
@@ -156,29 +198,53 @@ class BreakDownProcessor:
         return corresp_found
 
     def check_funding_section(self, paragraphs):
-        """Check for funding information sections."""
+        """Check for funding information sections.
+
+        Returns:
+            (paragraphs, funder_found, funder_text, skip_default)
+            skip_default is True when an existing Funding heading + 'no
+            funding'-style paragraph is already present; the caller should
+            NOT insert any default Funder content in that case.
+        """
         para_count = 0
         funder_found = False
         funder_text = ''
+        skip_default = False
         for paragraph in paragraphs:
             para_count = para_count + 1
             para_text = paragraph.text
             if re.search(r"^((Funding:|Fundings:|Funding|Fundings|Funding\(s\):|Funding\(s\))( |))$", para_text,
                          re.IGNORECASE):
-                paragraph.style = "Duplicate"
+                if para_count >= len(paragraphs):
+                    paragraph.style = "Duplicate"
+                    break
                 next_para = paragraphs[para_count]
+                if self.is_none_declared_text(next_para.text):
+                    # Existing heading + 'no funding'-style content: keep as-is.
+                    paragraph.style = "Funder_Title"
+                    next_para.style = "Funder_Para"
+                    skip_default = True
+                    break
+                paragraph.style = "Duplicate"
                 if re.search("study|supported|funding|funded|fund", next_para.text, re.IGNORECASE):
                     funder_text = next_para.text
                     funder_found = True
                     next_para.style = "Duplicate"
                     break
-        return paragraphs, funder_found, funder_text
+        return paragraphs, funder_found, funder_text, skip_default
 
     def check_funder_paragraph(self, paragraphs):
-        """Alternative check for funding paragraphs."""
+        """Alternative check for funding paragraphs.
+
+        Returns (paragraphs, funder_found, funder_text, skip_default). The
+        skip_default slot is included so the caller can unpack uniformly;
+        this code path only matches affirmative "This work was supported …"
+        text, so the flag is always False here.
+        """
         para_count = 0
         funder_found = False
         funder_text = ''
+        skip_default = False
         for paragraph in paragraphs:
             para_count = para_count + 1
             para_text = paragraph.text
@@ -187,7 +253,7 @@ class BreakDownProcessor:
                 funder_found = True
                 funder_text = para_text
                 break
-        return paragraphs, funder_found, funder_text
+        return paragraphs, funder_found, funder_text, skip_default
 
     def check_keywords_section(self, paragraphs):
         """Check for keywords section."""
@@ -391,13 +457,17 @@ class BreakDownProcessor:
         list_macros = ["Apply_Label"]
         process_doc = OpenDocFile()
         process_error, error_log, doc = process_doc.processDocFile(docxfile, True, True, True, list_macros)
-        print(f"Applying Label Styles: {docxfile}")
+        print(f"Applying Label Styles: {docxfile}", flush=True)
         self.apply_label_styles(docxfile)
+        print("[DEBUG] apply_label_styles done", flush=True)
         self.remove_dummy_lines(docxfile)
+        print("[DEBUG] remove_dummy_lines done", flush=True)
 
         article_json = os.path.split(docxfile)[0] + "/" + jid + "_" + aid + ".json"
+        print(f"[DEBUG] loading JSON: {article_json}", flush=True)
         with open(article_json) as file:
             article_data = json.load(file)
+        print("[DEBUG] JSON loaded", flush=True)
 
         author_count = len(article_data['authors_info'])
         author_data = article_data['authors_info']
@@ -497,7 +567,7 @@ class BreakDownProcessor:
             funder_head = self.journal_data[bjid]['funder_text']['funder_head']
             decl_head = self.journal_data[bjid]['declaration_text']['declaration_head']
 
-            paragraphs, decl_found, decl_text = self.check_declaration_section(paragraphs)
+            paragraphs, decl_found, decl_text, decl_skip_default = self.check_declaration_section(paragraphs)
             corresp_found = self.check_corresponding_author(article_data['authors_info'])
 
             if article_data['article_info']['openacess'] is True:
@@ -518,11 +588,16 @@ class BreakDownProcessor:
                 supp_text = self.journal_data[bjid]['supplementry_text']
 
             funding_found = False
+            funding_skip_default = False
             if funder_found is True:
-                paragraphs, funding_found, funder_para = self.check_funding_section(paragraphs)
-                if funding_found is False:
-                    paragraphs, funding_found, funder_para = self.check_funder_paragraph(paragraphs)
-                if author_count == 1:
+                paragraphs, funding_found, funder_para, funding_skip_default = self.check_funding_section(paragraphs)
+                if funding_found is False and funding_skip_default is False:
+                    paragraphs, funding_found, funder_para, funding_skip_default = self.check_funder_paragraph(paragraphs)
+                if funding_skip_default is True:
+                    # Existing 'no funding' content found — keep as-is, no default insertion.
+                    funder_text = ''
+                    funding_found = False
+                elif author_count == 1:
                     if funding_found is True:
                         funder_text = self.journal_data[bjid]['funder_text']["AU"] + " " + funder_para
                     else:
@@ -540,7 +615,11 @@ class BreakDownProcessor:
                 if re.search(r"([a-z])", funder_text, re.I):
                     funding_found = True
 
-            if decl_found is True:
+            if decl_skip_default is True:
+                # Existing 'none declared' content found — keep as-is, no default insertion.
+                decl_text = ''
+                decl_found = False
+            elif decl_found is True:
                 if author_count == 1:
                     if decl_found is True:
                         decl_text = self.journal_data[bjid]['declaration_text']["AU"] + " " + decl_text
@@ -799,22 +878,27 @@ class BreakDownProcessor:
                 document = new_styles.create_style(document, "Funder_Title")
             if "Funder" not in styles:
                 document = new_styles.create_style(document, "Funder")
-
-            breakdown_dic['Funder_Title'] = funder_head
-
             if "Funder_Para" not in styles:
                 document = new_styles.create_style(document, "Funder_Para")
-            breakdown_dic['Funder_Para'] = funder_text
+
+            # Skip default Funder insertion when existing 'no funding'-style
+            # heading + para is already in the document.
+            if funding_skip_default is not True:
+                breakdown_dic['Funder_Title'] = funder_head
+                breakdown_dic['Funder_Para'] = funder_text
 
             if "Declaration_Title" not in styles:
                 document = new_styles.create_style(document, "Declaration_Title")
-            breakdown_dic['Declaration_Title'] = decl_head
-
             if "Declaration_Para" not in styles:
                 document = new_styles.create_style(document, "Declaration_Para")
             if "Declaration" not in styles:
                 document = new_styles.create_style(document, "Declaration")
-            breakdown_dic['Declaration_Para'] = decl_text
+
+            # Skip default Declaration insertion when existing 'none declared'
+            # heading + para is already in the document.
+            if decl_skip_default is not True:
+                breakdown_dic['Declaration_Title'] = decl_head
+                breakdown_dic['Declaration_Para'] = decl_text
 
             if orcid_found is True:
                 orcid_count = len(orcid_details)

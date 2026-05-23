@@ -5,6 +5,7 @@ import sys
 import time
 import threading
 import logging
+import ctypes
 import pywintypes
 import win32com.client as client
 
@@ -20,6 +21,9 @@ class OpenDocFile:
     RETRY_WAIT = 2
     WORD_PROG_ID = "Word.Application"
     CALLEE_REJECTED = -2147418111
+    # ctypes constants for SetForegroundWindow / ShowWindow
+    SW_SHOW = 5
+    SW_RESTORE = 9
 
     _dispatch_lock = threading.Lock()
 
@@ -103,26 +107,72 @@ class OpenDocFile:
     #             return client.Dispatch(self.WORD_PROG_ID)
 
     def ensure_word_dispatch(self):
+        """Spawn Word visibly so UserForm macros (e.g. Apply_Label) can SetFocus.
+
+        DispatchEx with Visible=False (the old default) created a Word window
+        the OS never painted; fm20 UserForms then rejected SetFocus with
+        "control is invisible / not enabled / does not accept the focus".
+        Launching Visible=True from the start avoids that.
+
+        EnsureDispatch is tried first so the typelib cache is warm; if gen_py
+        is corrupt we fall back to DispatchEx.
+        """
         with self._dispatch_lock:
+            word = None
             try:
-                word = client.DispatchEx(self.WORD_PROG_ID)
-
-                # Stability settings (VERY important)
-                word.Visible = False
-                word.DisplayAlerts = 0
-                word.ScreenUpdating = False
-
-                return word
-
+                word = client.gencache.EnsureDispatch(self.WORD_PROG_ID)
             except Exception as exc:
-                logging.error("Failed to start Word COM: %s", exc)
-                raise
+                logging.warning(
+                    "EnsureDispatch failed (%s); falling back to DispatchEx",
+                    exc,
+                )
+                try:
+                    word = client.DispatchEx(self.WORD_PROG_ID)
+                except Exception as inner:
+                    logging.error("Failed to start Word COM: %s", inner)
+                    raise
+
+            try:
+                # UserForm macros need a real, painted window. Show it before
+                # any document is opened so Word has a foreground window to
+                # parent the form against.
+                word.Visible = True
+                word.DisplayAlerts = 0
+                # Do NOT disable ScreenUpdating here — when it's False the
+                # UserForm controls inside Apply_Label never paint and the
+                # subsequent .SetFocus call inside the macro raises
+                # fm20: "Can't move focus to the control...".
+                word.ScreenUpdating = True
+
+                # Push the new Word window to the foreground so macros that
+                # rely on ActiveWindow / focus see a normal interactive state.
+                try:
+                    hwnd = int(word.Hwnd) if hasattr(word, "Hwnd") else 0
+                    if hwnd:
+                        user32 = ctypes.windll.user32
+                        user32.ShowWindow(hwnd, self.SW_SHOW)
+                        user32.SetForegroundWindow(hwnd)
+                except Exception as fg_exc:
+                    logging.debug(
+                        "Foreground-window promotion skipped: %s", fg_exc
+                    )
+
+                # Tiny pause so the OS actually paints the window before
+                # the document open / macro Run happens.
+                time.sleep(0.3)
+            except Exception as exc:
+                logging.warning("Word stability setup failed: %s", exc)
+
+            return word
 
     def _open_with_retry(self, word, docname):
         for attempt in range(OpenDocFile.RETRIES):
             if not self._wait_for_file_ready(docname):
                 raise RuntimeError(f"File locked: {docname}")
             try:
+                # OpenAndRepair=False — repair-mode can put the document in
+                # a state where ActiveX / form controls aren't fully wired,
+                # which surfaces as fm20 SetFocus errors inside Apply_Label.
                 doc = word.Documents.Open(
                     FileName=os.path.abspath(docname),
                     ConfirmConversions=False,
@@ -130,7 +180,7 @@ class OpenDocFile:
                     AddToRecentFiles=False,
                     Revert=True,
                     Visible=True,
-                    OpenAndRepair=True,
+                    OpenAndRepair=False,
                     NoEncodingDialog=True,
                 )
 
@@ -147,6 +197,108 @@ class OpenDocFile:
                 else:
                     raise
         return None
+
+    def _force_foreground(self, hwnd):
+        """Steal foreground to `hwnd` even when our process isn't allowed to.
+
+        Windows blocks SetForegroundWindow from non-foreground processes;
+        the standard workaround is to attach our thread's input queue to
+        the target window's thread, which inherits its foreground rights.
+        """
+        if not hwnd:
+            return
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            # Synthesize an Alt keystroke — this gives our process the
+            # "user initiated" flag that SetForegroundWindow checks.
+            user32.keybd_event(0x12, 0, 0, 0)        # VK_MENU down
+            user32.keybd_event(0x12, 0, 0x0002, 0)   # VK_MENU up
+            target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+            my_thread = kernel32.GetCurrentThreadId()
+            attached = False
+            if target_thread and target_thread != my_thread:
+                attached = bool(user32.AttachThreadInput(
+                    my_thread, target_thread, True
+                ))
+            user32.ShowWindow(hwnd, self.SW_RESTORE)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            if attached:
+                user32.AttachThreadInput(my_thread, target_thread, False)
+        except Exception as exc:
+            logging.debug("Foreground promotion skipped: %s", exc)
+
+    def _activate_for_macro(self, word, doc):
+        """Bring document/window to a state where UserForm macros can run.
+
+        UserForm.SetFocus needs (a) the parent Word window foreground, and
+        (b) the document Active. Without these, Apply_Label dies with
+        fm20: 'control is invisible, not enabled, or of a type that does
+        not accept the focus'.
+        """
+        try:
+            doc.Activate()
+        except Exception as exc:
+            logging.debug("doc.Activate skipped: %s", exc)
+        try:
+            if word.ActiveWindow is not None:
+                word.ActiveWindow.Visible = True
+                try:
+                    word.ActiveWindow.WindowState = 0  # wdWindowStateNormal
+                except Exception:
+                    pass
+        except Exception as exc:
+            logging.debug("ActiveWindow setup skipped: %s", exc)
+        try:
+            word.Visible = True
+            word.Activate()
+        except Exception as exc:
+            logging.debug("word.Activate skipped: %s", exc)
+        try:
+            hwnd = int(word.Hwnd) if hasattr(word, "Hwnd") else 0
+            self._force_foreground(hwnd)
+        except Exception as exc:
+            logging.debug("hwnd lookup skipped: %s", exc)
+        # Give the OS one paint cycle so SetFocus inside the macro succeeds.
+        time.sleep(0.5)
+
+    def _run_macro_with_retry(self, word, doc, macro):
+        """Run a macro, retrying with multiple resolution forms.
+
+        Word's macro resolver is finicky: a qualified call like
+        ``'TAE_1431025_CLN.docx'!Apply_Label`` looks up the macro in the
+        document's own VBA project. When that project doesn't exist Word
+        sometimes falls into a recovery path that surfaces an fm20
+        UserForm error even when the actual macro lives in a startup
+        add-in. So we try unqualified first (which lets Word resolve via
+        all loaded templates) and fall back to the qualified form.
+
+        Returns (ok, last_exc). On failure the caller is expected to fall
+        back to the Python equivalent (e.g. apply_label_styles).
+        """
+        last_exc = None
+        attempts = (
+            macro,                   # unqualified — resolves via loaded templates
+            f"'{doc.Name}'!{macro}", # document-qualified — legacy form
+        )
+        for attempt, call_form in enumerate(attempts, start=1):
+            try:
+                word.Application.Run(call_form)
+                return True, None
+            except Exception as exc:
+                last_exc = exc
+                logging.warning(
+                    "Macro %s attempt %s (%s) failed: %s",
+                    macro,
+                    attempt,
+                    call_form,
+                    exc,
+                )
+                # Re-activate before retrying — covers the case where
+                # the previous failed call left Word out of foreground.
+                self._activate_for_macro(word, doc)
+        return False, last_exc
 
     def _wait_for_file_ready(self, path, timeout=30):
         start = time.time()
@@ -181,14 +333,25 @@ class OpenDocFile:
                 raise RuntimeError("Document open retries exhausted")
 
             if run_macros:
+                # Re-enable screen updating before macros — UserForm controls
+                # (Apply_Label etc.) fail SetFocus when ScreenUpdating=False
+                # because their controls are never rendered/painted.
+                try:
+                    word.ScreenUpdating = True
+                except Exception:
+                    pass
+                # Activate doc + foreground the Word window so UserForm
+                # SetFocus inside the macro can succeed.
+                self._activate_for_macro(word, doc)
                 logging.info("Processing file: %s", docname)
                 for macro in list_macros or []:
-                    try:
-                        # word.Application.Run(macro)
-                        word.Application.Run(f"'{doc.Name}'!{macro}")
-                    except Exception as exc:
+                    ok, exc = self._run_macro_with_retry(word, doc, macro)
+                    if not ok:
+                        # Caller (breakDownProcess) runs the Python equivalent
+                        # apply_label_styles() right after, so this stays a
+                        # non-fatal error — same as the previous behavior.
                         logging.error(
-                            "Macro failed (%s): %s",
+                            "Macro failed (%s): %s — Python fallback will run",
                             macro,
                             exc,
                         )
@@ -222,13 +385,22 @@ class OpenDocFile:
         finally:
             try:
                 word.DisplayAlerts = -1
-            except:
+            except Exception:
                 pass
+            # Always quit the Word instance — even if a document is still open
+            # (e.g. macro left a modal form in a broken state after an error).
+            # doc.Save() was already called above so SaveChanges=False is safe.
             try:
-                if word.Documents.Count == 0:
-                    word.Quit()
-            except:
-                pass
+                word.Quit(SaveChanges=False)
+            except Exception:
+                try:
+                    import subprocess as _sp
+                    _sp.call(
+                        ["taskkill", "/F", "/IM", "WINWORD.EXE"],
+                        stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                    )
+                except Exception:
+                    pass
         return have_error, error_report, word
 
     def openWordDocument(self, docname, word_visible=True):
