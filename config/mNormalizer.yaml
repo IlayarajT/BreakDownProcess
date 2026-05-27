@@ -1,0 +1,86 @@
+KillProcess:
+    - WINWORD.exe
+    - EXCEL.exe
+    - POWERPNT.exe
+    - PDFCreator.exe
+    - werFault.exe
+    - DWWIN.exe
+
+SAGE:
+    FileMode: share
+    OutputFormat: docx
+    SetEndOfDocument: EndOfDocument
+    TranslateEquation:
+        - Plain TeX.tdl
+    PdfCreationType:
+        - pdfcreator
+        - nativesaveas
+    RunMacros:
+        - webView
+        - UpdateTempChartFile
+        - AcceptTrackChange
+        - TotalCleanUP
+        - UnlinkFieldcodesExceptMath
+        - ConvertEndnoteToFootnote
+        - RemoveLineNumbers
+        - FlattenTextBoxes
+        - RemoveAllFramesInDoc
+        - RemoveUnwantedSpaces
+        - EliminateMultipleSpaces
+        - RemoveDocVar
+        - CitationsToStaticText
+        - RemoveFirstLineIndent
+        - RemoveAllHyperlinks
+        - CleanTableCells
+    RemainingMacros:
+        - ConvertEquation
+        - ListToText
+        - AutoFitTable
+        - CleanDoc
+        - RemoveAllBookmarks
+        - RemoveAllPagebreaks
+        - UpdateTempChartFile
+        - ConvertEquation
+        - UpdateTempChartFile
+        - CleanDoc
+        - CopyPasteWithStyle
+        - TestMacro
+        - ConvertEquation
+        - FormatEquation
+        - CheckEmptyMathExist
+        - MathToText
+        - AllMathToText
+        - InlineMathToText
+        - ListToText
+        - CheckIfMathExist
+        - ReferenceStyler
+        - HighlightMathSymbols
+        - UnlinkFieldcodes
+    RefStyler:
+        InPath:
+        OutPath:
+        LogPath:
+    MathChecker:
+        InPath:
+        OutPath:
+        LogPath:
+
+AvailableMacros:
+    - UnlinkFieldcodes
+    - DeleteUnusedStyles
+    - CopyPasteWithOutStyle
+    - RemoveAllBookmarks
+    - RemoveAllPagebreaks
+    - ConvertEndnoteToFootnote
+    - SetTableHeadInDocument
+    - UpdateTempChartFile
+    - HighlightMathSymbols
+    - ConvertEquation
+    - FormatEquation
+    - CheckEmptyMathExist
+    - MathToText
+    - AllMathToText
+    - InlineMathToText
+    - CheckIfMathExist
+
+TimeOut: 300
