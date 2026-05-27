@@ -552,27 +552,47 @@ class ProcessDoc:
                         except Exception as activate_err:
                             print(f"[WARN] word.Activate() failed (non-fatal, continuing save): {activate_err}")
 
-                        # Force Word to treat document as modified
-                        doc.Saved = False
-
                         if doc.ReadOnly:
                             raise Exception("Document is read-only after processing")
 
-                        same_name = doc.FullName  # full path + filename
+                        # F4: Determine the save target path.
+                        # doc.Name may be "Document1" when the file was opened via
+                        # OpenAndRepair on a network drive — in that case doc.FullName
+                        # points to a temp location and doc.Save() would trigger a
+                        # Save As dialog.  Always resolve the canonical path from
+                        # current_file_name and use SaveAs2 so the save is always
+                        # explicit and silent.
+                        doc_name = doc.Name  # filename only (no path)
+                        is_unnamed = (
+                            doc_name.lower().startswith("document")
+                            and doc_name.replace("Document", "").replace("document", "").strip().isdigit()
+                        )
 
-                        # Try doc.Save() first (simpler, less likely to trigger dialogs)
+                        if is_unnamed:
+                            print(f"[WARN] doc.Name is '{doc_name}' (unnamed document detected). "
+                                  f"Skipping doc.Saved=False and using SaveAs2 with explicit path.")
+                            target_path = current_file_name
+                        else:
+                            # F4: Only force-dirty when the document has a real name;
+                            # setting Saved=False on "Document1" guarantees a Save As dialog.
+                            doc.Saved = False
+                            target_path = doc.FullName  # full path + filename
+
+                        # Always use SaveAs2 with an explicit path — avoids every
+                        # variant of the "Save As dialog surprise".
+                        word.DisplayAlerts = 0
                         try:
-                            doc.Save()
-                            save_ok = True
-                            print("[SUCCESS] Document saved via doc.Save()")
-                        except Exception as save_err:
-                            print(f"[WARN] doc.Save() failed ({save_err}), trying SaveAs2...")
                             doc.SaveAs2(
-                                same_name,
+                                target_path,
                                 FileFormat=16  # wdFormatXMLDocument (.docx)
                             )
                             save_ok = True
                             print("[SUCCESS] Document saved via SaveAs2")
+                        except Exception as save_err:
+                            print(f"[WARN] SaveAs2 failed ({save_err}), falling back to doc.Save()...")
+                            doc.Save()
+                            save_ok = True
+                            print("[SUCCESS] Document saved via doc.Save()")
 
                     except Exception as e:
                         print(f"[ERROR] Save failed: {e}")

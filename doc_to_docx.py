@@ -20,6 +20,10 @@ class DocToDocx:
     def __init__(self):
         self.wd = self._init_word()
         self.wd.Visible = True
+        # F5: suppress all dialogs/prompts before any open/save operation
+        self.wd.DisplayAlerts = 0
+        self.wd.Options.SavePropertiesPrompt = False
+        self.wd.Options.SaveNormalPrompt = False
         time.sleep(2)
 
     # ------------------------------------------------------------------
@@ -160,19 +164,34 @@ class DocToDocx:
 
                 try:
                     print("[INFO]: SaveAs Docx...")
-                    word.ActiveDocument.SaveAs(
+                    # F2: use the captured doc reference, not ActiveDocument, to avoid
+                    # saving the wrong document when multiple files are open.
+                    # F5: ensure dialogs are suppressed immediately before save.
+                    word.DisplayAlerts = 0
+                    doc.SaveAs2(
                         new_file_abs,
-                        FileFormat=constants.wdFormatXMLDocument,
+                        FileFormat=16,  # wdFormatXMLDocument (.docx)
                     )
-                    word.ActiveDocument.Close()
+                    doc.Close(SaveChanges=False)
 
                     time.sleep(1)
 
-                    # Force namespace normalization
+                    # F3: Force namespace normalization without OpenAndRepair.
+                    # OpenAndRepair on a network path causes Word to open as "Document1",
+                    # making repaired.Save() trigger a Save As dialog.
+                    # Use SaveAs2 with explicit path so it always saves silently.
                     try:
-                        repaired = word.Documents.Open(new_file_abs)
-                        repaired.Save()
-                        repaired.Close()
+                        word.DisplayAlerts = 0
+                        repaired = word.Documents.Open(
+                            new_file_abs,
+                            ConfirmConversions=False,
+                            ReadOnly=False,
+                            AddToRecentFiles=False,
+                            OpenAndRepair=False,  # F1/F3: avoid "Document1" rename
+                            NoEncodingDialog=True,
+                        )
+                        repaired.SaveAs2(new_file_abs, FileFormat=16)
+                        repaired.Close(SaveChanges=False)
                     except Exception:
                         pass
 

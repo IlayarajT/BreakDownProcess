@@ -117,7 +117,11 @@ def open_word_document(word, file_name, retries=3, delay_between_retries=5, time
                 word.ScreenUpdating = False
                 word.EnableCancelKey = 0  # Disable ESC key interrupt
 
-                # Open document with extended timeout
+                # Open document with extended timeout.
+                # F1: OpenAndRepair=False — using True on a network/mapped drive
+                # causes Word to open the file as "Document1" (an internal repair
+                # copy), which then makes any doc.Save() call trigger a Save As
+                # dialog instead of saving silently.
                 doc = word.Documents.Open(
                     FileName=com_path,
                     ConfirmConversions=False,
@@ -125,10 +129,10 @@ def open_word_document(word, file_name, retries=3, delay_between_retries=5, time
                     AddToRecentFiles=False,
                     Revert=True,
                     NoEncodingDialog=True,
-                    OpenAndRepair=True,
+                    OpenAndRepair=False,
                     PasswordDocument="",
                     WritePasswordDocument="",
-                    Visible=True  # Open hidden to speed up
+                    Visible=True
                 )
 
                 # Wait for document to fully load
