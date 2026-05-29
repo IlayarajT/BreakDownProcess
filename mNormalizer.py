@@ -280,9 +280,16 @@ class ProcessDoc:
         pre_clean_replaces_macros = bool(
             pre_clean_cfg.get("replace_macros", False)
         )
-        pre_clean_jar_args = pre_clean_cfg.get("jar_args", ["-pre"]) or ["-pre"]
+        pre_clean_jar_args = list(pre_clean_cfg.get("jar_args", ["-pre"]) or ["-pre"])
         pre_clean_timeout = int(pre_clean_cfg.get("timeout", 300))
         pre_clean_jar_name = pre_clean_cfg.get("jar_name", "sage-auto-styler.jar")
+
+        footnote_journals = self.normalizer_config.get("FootnoteJournals", [])
+        folder = input_details.get("folder", "")
+        jid = folder.split("_")[0].upper() if folder else ""
+        if jid and jid in [j.upper() for j in footnote_journals]:
+            pre_clean_jar_args.append("-fnote")
+            print(f"[INFO] Footnote journal detected ({jid}): adding -fnote to pre-clean args")
 
         # If pre-clean replaces macros, blank the macro list so the macro
         # block becomes a no-op without further branching.

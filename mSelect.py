@@ -751,13 +751,24 @@ class ParaStylerWorker(QThread):
                     run_breakdown = False
 
         # ── 2A: INBUILD / DIRECT mode ──────────────────────────────────
+        # Load footnote journals to decide whether -fnote flag is needed
+        _fnote_journals = []
+        try:
+            _mnorm_yaml = os.path.join(configFolder, "config", "mNormalizer.yaml")
+            with open(_mnorm_yaml, "r") as _mf:
+                _mnorm_cfg = _yaml.safe_load(_mf)
+                _fnote_journals = [j.upper() for j in _mnorm_cfg.get("FootnoteJournals", [])]
+        except Exception:
+            pass
+        _parastyler_extra = ["-fnote"] if jrn_id.upper() in _fnote_journals else []
+
         if inbuild_parastyler:
             self.status.emit("Running Para Styler (inbuild)... please wait")
             self.progress.emit(12)
 
             from docxManipulator import DocxManipulator
             docxprocess   = DocxManipulator()
-            processresult, as_file = docxprocess.docx_processor(file_full_path)
+            processresult, as_file = docxprocess.docx_processor(file_full_path, extra_args=_parastyler_extra)
 
             # Fallback to local styler bat if DocxManipulator could not handle the file
             if processresult is False:
@@ -922,7 +933,7 @@ class ParaStylerWorker(QThread):
                 self.progress.emit(25)
                 from docxManipulator import DocxManipulator as _DM
                 _dxp = _DM()
-                _local_ok, _local_as = _dxp.docx_processor(file_full_path)
+                _local_ok, _local_as = _dxp.docx_processor(file_full_path, extra_args=_parastyler_extra)
 
                 if _local_ok is False:
                     self.status.emit("Falling back to local styler...")

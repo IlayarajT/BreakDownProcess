@@ -16,7 +16,7 @@ class DocxManipulator:
         if not os.path.exists(self.jar_file):
             raise FileNotFoundError(f"JAR file not found: {self.jar_file}")
 
-    def docx_processor(self, docx_file):
+    def docx_processor(self, docx_file, extra_args=None):
         # Validate input file
         docx_file = os.path.normpath(docx_file)
 
@@ -33,6 +33,8 @@ class DocxManipulator:
 
         # Build and run command
         command = ["java", "-jar", self.jar_file, "-dx", docx_file, "-ipas"]
+        if extra_args:
+            command.extend(extra_args)
         logger.info(f"Running command: {' '.join(command)}")
 
         try:

@@ -1,3 +1,39 @@
+FootnoteJournals:
+    - CJX
+    - PT
+    - RRPE
+    - SPQ
+    - SRD
+    - MHS
+    - ENJ
+    - NJE
+    - ATR
+    - CAC
+    - EAU
+    - EJT
+    - EXT
+    - FTH
+    - HOS
+    - INT
+    - ITQ
+    - JNT
+    - JOT
+    - JSP
+    - LCH
+    - MIL
+    - PTJ
+    - RAC
+    - RAE
+    - SCE
+    - STL
+    - TBT
+    - TSJ
+    - MLI
+    - TRS
+    - ABX
+    - JSF
+    - CLS
+
 KillProcess:
     - WINWORD.exe
     - EXCEL.exe
