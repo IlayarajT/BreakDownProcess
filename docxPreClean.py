@@ -43,9 +43,24 @@ class DocxPreClean:
                     #         child.tag.endswith('rPr') or \
                     #         child.tag.endswith('ind'):
                     #     pPr.remove(child)
-            for run in paragraph.runs:
+            # Footnote paragraphs (style "FNOTE" / "footnote text") begin with a
+            # superscript marker label (e.g. "1") carried by the FootnoteReference
+            # character style. The rStyle strip below would flatten that marker to
+            # the baseline ("online"). For footnote paragraphs, preserve the
+            # leading marker's superscript so the starting label stays superscript.
+            style_name = (paragraph.style.name or "").strip().lower()
+            is_footnote_para = style_name in ("fnote", "footnote text", "footnotetext")
+            for run_index, run in enumerate(paragraph.runs):
                 # print(run.text)
                 rPr = run._element.rPr
+                preserve_superscript = False
+                if is_footnote_para and run_index == 0 and rPr is not None:
+                    rStyle = rPr.find(qn('w:rStyle'))
+                    vertAlign = rPr.find(qn('w:vertAlign'))
+                    rstyle_val = (rStyle.get(qn('w:val')) or "").lower() if rStyle is not None else ""
+                    valign_val = vertAlign.get(qn('w:val')) if vertAlign is not None else ""
+                    if rstyle_val == "footnotereference" or valign_val == "superscript":
+                        preserve_superscript = True
                 if rPr is not None:
                     for child in rPr:
                         if child.tag.endswith('sz') or child.tag.endswith('szCs') or \
@@ -57,6 +72,8 @@ class DocxPreClean:
                                 child.tag.endswith('textOutline') or \
                                 child.tag.endswith('position'):
                             rPr.remove(child)
+                if preserve_superscript:
+                    run.font.superscript = True
         #                                 child.tag.endswith('rFonts') or \
         return document
 
