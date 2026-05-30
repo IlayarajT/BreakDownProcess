@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import difflib
 import logging
 import warnings
 import yaml
@@ -12,6 +13,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import StaleElementReferenceException
 
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.firefox.service import Service as FirefoxService
@@ -262,6 +264,108 @@ class GetArticleId:
         except Exception as exc:
             print(f"[WARN] Could not iterate rows: {exc}")
         return None
+
+    # ------------------------------------------------------------
+    # MANUSCRIPT-ID FALLBACK (no JID match in any locale)
+    # ------------------------------------------------------------
+    def _safe_table_rows(self, table):
+        """Return the result rows, re-locating the ArticleGrid by id if the
+        cached table element has gone stale (the page may have been navigated
+        between searches)."""
+        for _ in range(3):
+            try:
+                return table.find_elements(By.XPATH, "./tbody/tr")
+            except StaleElementReferenceException:
+                try:
+                    table = self.driver.find_element(
+                        By.ID, "ctl00_SmartMasterContent_ArticleGrid_ctl00"
+                    )
+                except Exception:
+                    time.sleep(0.5)
+        return []
+
+    def _select_row_by_title(self, table, article_title):
+        """Pick a row from the manuscript-id search results.
+
+        - Exactly one data row  -> that row (its td[1] is the real journal
+          acronym, e.g. 'PIC' even when metadata said 'JMES').
+        - Multiple rows         -> difflib fuzzy-match the metadata
+          *article_title* against the Article Title column (td[4]) and pick
+          the best-scoring row.
+
+        Returns a 1-based row index (XPath tr[N]); defaults to 1.
+        """
+        rows = self._safe_table_rows(table)
+        if not rows:
+            print("[WARN] Could not read manuscript-search rows; using row 1.")
+            return 1
+
+        data = []  # (1-based idx, article-title text)
+        for idx in range(1, len(rows) + 1):
+            for _ in range(2):  # retry once on staleness
+                try:
+                    cells = rows[idx - 1].find_elements(By.XPATH, "./td")
+                    if len(cells) >= 4:
+                        data.append((idx, cells[3].text.strip()))
+                    break
+                except StaleElementReferenceException:
+                    rows = self._safe_table_rows(table)
+                    if idx > len(rows):
+                        break
+                except Exception:
+                    break
+
+        if not data:
+            return 1
+        if len(data) == 1:
+            print(f"[INFO] Manuscript search returned a single row; using row "
+                  f"{data[0][0]} (journal acronym taken from that row).")
+            return data[0][0]
+
+        target = (article_title or "").strip().lower()
+        if not target:
+            print("[WARN] Multiple manuscript-search rows but no metadata "
+                  "article_title to match; using row 1.")
+            return 1
+
+        best_idx, best_score = data[0][0], -1.0
+        for idx, title in data:
+            score = difflib.SequenceMatcher(None, target, (title or "").lower()).ratio()
+            if score > best_score:
+                best_score, best_idx = score, idx
+        print(f"[INFO] Manuscript search returned {len(data)} rows; best "
+              f"article-title match is row {best_idx} (score={best_score:.2f}).")
+        return best_idx
+
+    def _resolve_via_manuscript(self, locale_order, ms_no, article_title):
+        """Resolve the correct results row by manuscript id when no locale
+        produced a JID-matching row.
+
+        Runs a fresh SMART search by *ms_no* in locale order (UK then US),
+        reading rows from the live table (avoids stale-element issues from
+        reusing an earlier locale's results), then selects the row via
+        _select_row_by_title.
+
+        Returns (table, matched_row, active_loc) or (None, None, None).
+        """
+        if not ms_no:
+            return None, None, None
+
+        for loc in locale_order:
+            print(f"[INFO]: No JID match — searching by manuscript id "
+                  f"'{ms_no}' in {loc} locale...")
+            try:
+                t, _ = self._login_and_search(loc, ms_no, expected_jid=None)
+            except Exception as exc:
+                print(f"[WARN] Manuscript search failed in {loc}: {exc}")
+                continue
+            if t is None:
+                print(f"[INFO]: No manuscript records found in {loc}.")
+                continue
+            matched_row = self._select_row_by_title(t, article_title)
+            return t, matched_row, loc
+
+        return None, None, None
 
     # ------------------------------------------------------------
     def create_info_xml(
@@ -926,15 +1030,18 @@ class GetArticleId:
     # ------------------------------------------------------------
     # ENTRY POINTS (UNCHANGED)
     # ------------------------------------------------------------
-    def smart_login(self, article_id, ms_no, journal_id, process_folder):
+    def smart_login(self, article_id, ms_no, journal_id, process_folder,
+                    article_title=None):
         try:
             if journal_id in self.journal_json:
                 jrn_loc = self.journal_json[journal_id]["journal_loc"]
                 return self.login_smart(
-                    article_id, ms_no, journal_id, process_folder, jrn_loc
+                    article_id, ms_no, journal_id, process_folder, jrn_loc,
+                    article_title=article_title
                 )
             return self.login_regular(
-                article_id, ms_no, journal_id, process_folder
+                article_id, ms_no, journal_id, process_folder,
+                article_title=article_title
             )
         finally:
             self._safe_quit_driver()
@@ -993,7 +1100,8 @@ class GetArticleId:
         matched_row = self._find_matching_row(table, expected_jid)
         return table, matched_row
 
-    def login_smart(self, article_id, ms_no, journal_id, process_folder, jrn_loc):
+    def login_smart(self, article_id, ms_no, journal_id, process_folder, jrn_loc,
+                    article_title=None):
         driver = self.driver
         search_term = article_id or ms_no
 
@@ -1030,16 +1138,19 @@ class GetArticleId:
                       f"for JID '{journal_id}'.")
                 break
 
-        # Fallback: no JID match in any locale, use first available locale
+        # Fallback: no JID match in any locale. Resolve the real journal via a
+        # manuscript-id search — single row → that row; multiple rows → fuzzy
+        # match the metadata article_title against the title column (td[4]).
         if table is None and candidate_results:
-            for loc in locale_order:
-                if loc in candidate_results:
-                    table, _ = candidate_results[loc]
-                    matched_row = 1
-                    active_loc = loc
-                    print(f"[WARN] No JID match in any locale. Falling back to "
-                          f"{loc} locale, row 1. Expected JID was '{journal_id}'.")
-                    break
+            m_table, m_row, m_loc = self._resolve_via_manuscript(
+                locale_order, ms_no, article_title
+            )
+            if m_table is not None:
+                table = m_table
+                matched_row = m_row
+                active_loc = m_loc
+                print(f"[INFO] No JID match for '{journal_id}'. Using manuscript-id "
+                      f"result row {matched_row} in {active_loc} locale.")
 
         if table is None:
             print("[INFO]: No matching records found in any locale.")
@@ -1209,7 +1320,8 @@ class GetArticleId:
 
         return article_info
 
-    def login_regular(self, article_id, ms_no, journal_id, process_folder):
+    def login_regular(self, article_id, ms_no, journal_id, process_folder,
+                      article_title=None):
         driver = self.driver
         search_term = article_id or ms_no
 
@@ -1249,16 +1361,19 @@ class GetArticleId:
                 print(f"[INFO]: Locale '{loc}' has results but no JID match.")
 
         # Fallback: no locale had a JID-matching row, but some had results.
-        # Use the first locale with results and warn the user.
+        # Resolve the real journal via a manuscript-id search — single row →
+        # that row; multiple rows → fuzzy match the metadata article_title
+        # against the Article Title column (td[4]).
         if table is None and candidate_results:
-            for loc in locale_order:
-                if loc in candidate_results:
-                    table, _ = candidate_results[loc]
-                    matched_row = 1  # fall back to first row
-                    active_loc = loc
-                    print(f"[WARN] No JID match in any locale. Falling back to "
-                          f"{loc} locale, row 1. Expected JID was '{journal_id}'.")
-                    break
+            m_table, m_row, m_loc = self._resolve_via_manuscript(
+                locale_order, ms_no, article_title
+            )
+            if m_table is not None:
+                table = m_table
+                matched_row = m_row
+                active_loc = m_loc
+                print(f"[INFO] No JID match for '{journal_id}'. Using manuscript-id "
+                      f"result row {matched_row} in {active_loc} locale.")
 
         if table is None:
             print("[INFO]: No matching records found in any locale.")

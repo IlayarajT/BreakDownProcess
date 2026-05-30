@@ -13,13 +13,26 @@ class ShortMetadataProcessor:
             journal_id = self._get_journal_id(root)
             article_id = root.find('./front/article-meta/article-id[@pub-id-type="publisher-id"]').text
             ms_no = root.find('./front/article-meta/article-id[@pub-id-type="manuscript"]').text
-            
+            article_title = self._get_article_title(root)
+
             # Get article details from Sage Smart
-            info_generated, article_id, jrn_tla = self.sage_connector.get_article_details(article_id, ms_no, journal_id, process_folder)
+            info_generated, article_id, jrn_tla = self.sage_connector.get_article_details(
+                article_id, ms_no, journal_id, process_folder, article_title=article_title
+            )
             
             return info_generated, journal_id, article_id, ms_no
         except Exception as e:
             return False, None, None, None
+
+    @staticmethod
+    def _get_article_title(root):
+        """Best-effort extraction of the article title from short (JATS) metadata."""
+        for xpath in ('./front/article-meta/title-group/article-title',
+                      './/article-title', './/article_title'):
+            el = root.find(xpath)
+            if el is not None and (el.text or '').strip():
+                return el.text.strip()
+        return None
 
     def _get_journal_id(self, root):
         journal_id = root.find('./front/journal-meta/journal-id[@journal-id-type="acronym"]')

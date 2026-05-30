@@ -21,6 +21,15 @@ from TransformXmlJar import XmlTransformJar
 
 
 class ApplyStyles:
+    # Standard Word highlight colours (w:shd @w:fill, lower-case hex). Run-level
+    # shading using one of these is an intentional text highlight and is kept by
+    # remove_rpr_styles; everything else (white/auto, decorative grays, field
+    # shading) is stripped. White is excluded as it carries no visible highlight.
+    _HIGHLIGHT_FILLS = frozenset({
+        'ffff00', '00ff00', '00ffff', 'ff00ff', '0000ff', 'ff0000', '000080',
+        '008080', '008000', '800080', '800000', '808000', '808080', 'c0c0c0',
+    })
+
     def __init__(self):
         self.configFolder, self.breakDownConfig = getconfig()
         yaml_file = os.path.join(self.configFolder, "config\\paraStyles.yaml")
@@ -37,6 +46,56 @@ class ApplyStyles:
             self.backmatterTitles = json.loads(backmatter_json.read())
         self.template_path = 'SupportingFiles/SAGE_styles.docx'  # Adjust the path to your .dot file
         self.template = Document(self.template_path)
+
+    @staticmethod
+    def convert_duplicate_to_normal(docxfile):
+        """Neutralise the 'Duplicate' marker style before ParaStyler/JAR.
+
+        Paragraphs styled 'Duplicate' inherit a red font colour + yellow
+        highlight from the style definition (the duplicate marking). Re-map
+        those paragraphs to the 'Normal' style — which drops the inherited
+        red/highlight — while keeping each run's direct formatting (bold,
+        italic, etc.). Any direct red colour / highlight / yellow shading
+        left on the runs (or the paragraph mark) is also stripped so no
+        duplicate marking survives. Runs anywhere in the body, including
+        inside tables, are covered. Returns True if anything changed.
+        """
+        document = Document(docxfile)
+        W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+        def _clean_rpr(rPr):
+            if rPr is None:
+                return
+            for color in rPr.findall(qn("w:color")):
+                if (color.get(qn("w:val")) or "").lower() == "ff0000":
+                    rPr.remove(color)
+            for hl in rPr.findall(qn("w:highlight")):
+                rPr.remove(hl)
+            for shd in rPr.findall(qn("w:shd")):
+                if (shd.get(qn("w:fill")) or "").lower() in ("ffff00", "ff0000"):
+                    rPr.remove(shd)
+
+        changed = False
+        for p in document.element.iter(qn("w:p")):
+            pPr = p.find(qn("w:pPr"))
+            if pPr is None:
+                continue
+            pStyle = pPr.find(qn("w:pStyle"))
+            if pStyle is None or (pStyle.get(qn("w:val")) or "") != "Duplicate":
+                continue
+            # Re-point the paragraph style to Normal (drops the red + yellow
+            # highlight inherited from the Duplicate style).
+            pStyle.set(qn("w:val"), "Normal")
+            # Strip any direct duplicate marking left on the paragraph mark
+            # and on each run, preserving bold/italic/etc.
+            _clean_rpr(pPr.find(qn("w:rPr")))
+            for r in p.iter(qn("w:r")):
+                _clean_rpr(r.find(qn("w:rPr")))
+            changed = True
+
+        if changed:
+            document.save(docxfile)
+        return changed
 
     def apply_styles(self, docxfile):
         document = Document(docxfile)
@@ -89,12 +148,36 @@ class ApplyStyles:
                     # Specify the tags of the child elements you want to remove
                     if child.tag.endswith('rPr'):
                         pPr.remove(child)
-            for run in paragraph.runs:
+            # Footnote paragraphs (FNOTE / footnote text) begin with a superscript
+            # marker label (e.g. "1") whose superscript is carried by the
+            # FootnoteReference character style. Stripping rStyle below would
+            # flatten that marker to the baseline ("online"). Preserve the leading
+            # marker's superscript so the starting FNOTE label stays superscript.
+            style_name = (paragraph.style.name or "").strip().lower()
+            is_footnote_para = style_name in ("fnote", "footnote text", "footnotetext")
+            for run_index, run in enumerate(paragraph.runs):
                 rPr = run._element.rPr
+                preserve_superscript = False
+                if is_footnote_para and run_index == 0 and rPr is not None:
+                    rStyle = rPr.find(qn('w:rStyle'))
+                    vertAlign = rPr.find(qn('w:vertAlign'))
+                    rstyle_val = (rStyle.get(qn('w:val')) or "").lower() if rStyle is not None else ""
+                    valign_val = vertAlign.get(qn('w:val')) if vertAlign is not None else ""
+                    if rstyle_val == "footnotereference" or valign_val == "superscript":
+                        preserve_superscript = True
                 if rPr is not None:
                     for child in rPr:
-                        if child.tag.endswith('sz') or child.tag.endswith('szCs') or \
-                                child.tag.endswith('shd') or \
+                        if child.tag.endswith('shd'):
+                            # Run-level shading whose fill is a standard Word
+                            # highlight colour (e.g. yellow FFFF00) is an
+                            # intentional text highlight and must be retained.
+                            # Other shading (blank/auto/white, decorative grays
+                            # like D3D3D3, field shading) is still stripped.
+                            fill = (child.get(qn('w:fill')) or '').lower()
+                            if fill in self._HIGHLIGHT_FILLS:
+                                continue
+                            rPr.remove(child)
+                        elif child.tag.endswith('sz') or child.tag.endswith('szCs') or \
                                 child.tag.endswith('rStyle') or \
                                 child.tag.endswith('color') or \
                                 child.tag.endswith('u') or \
@@ -102,6 +185,8 @@ class ApplyStyles:
                                 child.tag.endswith('textOutline') or \
                                 child.tag.endswith('position'):
                             rPr.remove(child)
+                if preserve_superscript:
+                    run.font.superscript = True
         #                                 child.tag.endswith('rFonts') or \
         return document
 
@@ -181,6 +266,7 @@ class ApplyStyles:
 
         BULLET_GLYPHS = {
             '•', '·', '◦', '▪', '▸', '▶', '►', '✓', '✔', '✗', '✘',
+            '\u25cf', '\u25cb', '\u25ef', '\u25a0', '\u25a1', '\u25c6', '\u25c7', '\u2219', '\u2023', '\u2043',
             '\uf0b7', '\uf06c', '\uf06e', '\uf073',
         }
         UL_LVLTEXT = {'-', '–', '—', '\u2013', '\u2014'}
@@ -287,10 +373,20 @@ class ApplyStyles:
 
             first_char = text[0]
 
-            # Word built-in list style name → UL
-            # (lista, listb, listc … and all other UL_STYLE_NAMES)
+            # Recognised list style (lista, listb, … and all UL_STYLE_NAMES):
+            # classify by the visible leading marker —
+            #   bullet glyph (•, ●, ▪, …)          → BL
+            #   number / letter label (1.  (1)  a. …) → NL
+            #   otherwise (tab-indented / plain)    → UL
             if current_style in UL_STYLE_NAMES:
-                paragraph.style = document.styles["UL"]
+                stripped = text.lstrip()
+                lead = stripped[0] if stripped else ''
+                if lead in BULLET_GLYPHS:
+                    paragraph.style = document.styles["BL"]
+                elif NL_TEXT_RE.match(stripped):
+                    paragraph.style = document.styles["NL"]
+                else:
+                    paragraph.style = document.styles["UL"]
                 continue
 
             # ── Below this point the style is NOT a recognised list style.

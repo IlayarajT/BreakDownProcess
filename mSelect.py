@@ -720,6 +720,17 @@ class ParaStylerWorker(QThread):
         expected_as_name = prefix + "_CLN_AS.docx"
         as_file          = os.path.join(file_folder, expected_as_name)
 
+        # ── Neutralise the 'Duplicate' marker style before styling ──────
+        # Paragraphs styled 'Duplicate' carry a red-font + yellow-highlight
+        # marking from the style. Re-map them to Normal (keeping direct
+        # bold/italic) and strip the red/highlight so the JAR/styler sees
+        # clean text. Applied in place to file_full_path, which feeds both
+        # the inbuild (direct JAR) and watcher (copied input) modes below.
+        try:
+            ApplyStyles.convert_duplicate_to_normal(file_full_path)
+        except Exception as _dup_err:
+            print(f"[WARN] Duplicate-style conversion failed (continuing): {_dup_err}")
+
         # ── JSON pre-check (inbuild mode) ──────────────────────────────
         # The JSON is needed later by BreakDown.  Ask the user now
         # rather than silently failing mid-pipeline.

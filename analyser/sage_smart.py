@@ -12,10 +12,12 @@ class SageSmartConnector:
         with open(journals_file, "r") as stream:
             return json.load(stream)
             
-    def get_article_details(self, article_id, ms_no, journal_id, process_folder):
+    def get_article_details(self, article_id, ms_no, journal_id, process_folder,
+                            article_title=None):
         create_info = GetArticleId()
         info_generated, article_id, jrn_tla = create_info.smart_login(
-            article_id, ms_no, journal_id, process_folder
+            article_id, ms_no, journal_id, process_folder,
+            article_title=article_title
         )
         return info_generated, article_id, jrn_tla
         

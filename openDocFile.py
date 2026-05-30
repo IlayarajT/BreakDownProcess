@@ -247,6 +247,39 @@ class OpenDocFile:
             word.Quit()
             return None
 
+    def openWordDocumentVisible(self, docname):
+        """Open *docname* in a visible Word window and return (word, doc).
+
+        Used as the final step to surface the completed document to the
+        user. Returns (None, None) on failure.
+        """
+        try:
+            word = self.ensure_word_dispatch()
+            word.Visible = True
+            try:
+                word.ScreenUpdating = True
+            except Exception:
+                pass
+
+            doc = self._open_with_retry(word, docname)
+            if not doc:
+                return None, None
+
+            try:
+                word.Activate()
+                doc.Activate()
+            except Exception:
+                pass
+
+            return word, doc
+        except Exception as exc:
+            logging.error(
+                "Error opening document (visible) %s: %s",
+                docname,
+                exc,
+            )
+            return None, None
+
 
 
 # openDoc = OpenDocFile()

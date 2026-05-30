@@ -16,6 +16,15 @@ class DocxManipulator:
         if not os.path.exists(self.jar_file):
             raise FileNotFoundError(f"JAR file not found: {self.jar_file}")
 
+    @staticmethod
+    def _needs_ascii_alias(path):
+        """The JAR (Java on Windows) can mishandle command-line filenames that
+        contain non-ASCII characters (e.g. the dotless 'ı', U+0131) or
+        whitespace, reporting 'Input docx file location given not found'.
+        Such names must be routed through a sanitized ASCII copy."""
+        name = os.path.basename(path)
+        return any(ord(c) > 127 for c in name) or any(c.isspace() for c in name)
+
     def docx_processor(self, docx_file, extra_args=None):
         # Validate input file
         docx_file = os.path.normpath(docx_file)
@@ -31,41 +40,82 @@ class DocxManipulator:
         # Build output filename
         as_docx = re.sub(r"\.docx$", "_AS.docx", docx_file, flags=re.IGNORECASE)
 
+        # Route risky (non-ASCII / spaced) filenames through a sanitized ASCII
+        # copy so the JAR can locate the input, then map its "_AS" output back.
+        jar_input = docx_file
+        alias_path = None
+        if self._needs_ascii_alias(docx_file):
+            alias_path = os.path.join(
+                os.path.dirname(docx_file), f"_jaras_{os.getpid()}.docx"
+            )
+            try:
+                shutil.copy2(docx_file, alias_path)
+                jar_input = alias_path
+                logger.info(f"Risky filename — running JAR on ASCII alias: {alias_path}")
+            except OSError as exc:
+                logger.warning(f"Could not create ASCII alias ({exc}); "
+                               f"running on original name.")
+                alias_path = None
+                jar_input = docx_file
+
         # Build and run command
-        command = ["java", "-jar", self.jar_file, "-dx", docx_file, "-ipas"]
+        command = ["java", "-jar", self.jar_file, "-dx", jar_input, "-ipas"]
         if extra_args:
             command.extend(extra_args)
         logger.info(f"Running command: {' '.join(command)}")
 
         try:
-            process = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                timeout=300  # 5-minute timeout to prevent hangs
-            )
-        except FileNotFoundError:
-            logger.error("Java is not installed or not found in PATH.")
-            return False, None
-        except subprocess.TimeoutExpired:
-            logger.error("Process timed out after 300 seconds.")
-            return False, None
+            try:
+                process = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    timeout=300  # 5-minute timeout to prevent hangs
+                )
+            except FileNotFoundError:
+                logger.error("Java is not installed or not found in PATH.")
+                return False, None
+            except subprocess.TimeoutExpired:
+                logger.error("Process timed out after 300 seconds.")
+                return False, None
 
-        # Log output for debugging
-        logger.debug(f"Return code: {process.returncode}")
-        logger.debug(f"STDOUT:\n{process.stdout}")
-        if process.stderr:
-            logger.warning(f"STDERR:\n{process.stderr}")
+            # Log output for debugging
+            logger.debug(f"Return code: {process.returncode}")
+            logger.debug(f"STDOUT:\n{process.stdout}")
+            if process.stderr:
+                logger.warning(f"STDERR:\n{process.stderr}")
 
-        # Validate result
-        if process.returncode != 0:
-            logger.error(f"Process exited with return code {process.returncode}")
-            return False, None
+            # Validate result
+            if process.returncode != 0:
+                logger.error(f"Process exited with return code {process.returncode}")
+                return False, None
 
-        if not re.search(r"Process Completed Successfully", process.stdout, re.IGNORECASE):
-            logger.error("Success message not found in process output.")
-            return False, None
+            if not re.search(r"Process Completed Successfully", process.stdout, re.IGNORECASE):
+                logger.error("Success message not found in process output.")
+                return False, None
+
+            # Map the alias's "_AS" output back to the expected as_docx name.
+            if alias_path is not None:
+                alias_stem = re.sub(r"\.docx$", "", os.path.basename(alias_path),
+                                    flags=re.IGNORECASE)
+                alias_as = os.path.join(
+                    os.path.dirname(docx_file), f"{alias_stem}_AS.docx"
+                )
+                if os.path.isfile(alias_as):
+                    try:
+                        if os.path.exists(as_docx):
+                            os.remove(as_docx)
+                        os.rename(alias_as, as_docx)
+                    except OSError as exc:
+                        logger.error(f"Failed to map alias output to {as_docx}: {exc}")
+                        return False, None
+        finally:
+            if alias_path is not None and os.path.isfile(alias_path):
+                try:
+                    os.remove(alias_path)
+                except OSError:
+                    pass
 
         if not os.path.isfile(as_docx):
             logger.error(f"Expected output file not found: {as_docx}")
@@ -124,36 +174,74 @@ class DocxManipulator:
         org_file   = os.path.join(org_dir, basename)                # original's new home
 
         # ── run the JAR ─────────────────────────────────────────────────────
-        command = ["java", "-jar", self.jar_file, "-dx", docx_file] + list(jar_args)
+        # Route risky (non-ASCII / spaced) filenames through a sanitized ASCII
+        # copy so the JAR can locate the input, then map its "_PRE" output back
+        # to the expected name.
+        jar_input = docx_file
+        alias_path = None
+        if self._needs_ascii_alias(docx_file):
+            alias_path = os.path.join(parent_dir, f"_jarpre_{os.getpid()}.docx")
+            try:
+                shutil.copy2(docx_file, alias_path)
+                jar_input = alias_path
+                logger.info(f"Risky filename — running JAR on ASCII alias: {alias_path}")
+            except OSError as exc:
+                logger.warning(f"Could not create ASCII alias ({exc}); "
+                               f"running on original name.")
+                alias_path = None
+                jar_input = docx_file
+
+        command = ["java", "-jar", self.jar_file, "-dx", jar_input] + list(jar_args)
         logger.info(f"Running pre-clean command: {' '.join(command)}")
 
         try:
-            process = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                universal_newlines=True,
-                timeout=timeout,
-            )
-        except FileNotFoundError:
-            logger.error("Java is not installed or not found in PATH.")
-            return False, None
-        except subprocess.TimeoutExpired:
-            logger.error(f"Pre-clean timed out after {timeout} seconds.")
-            return False, None
+            try:
+                process = subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    timeout=timeout,
+                )
+            except FileNotFoundError:
+                logger.error("Java is not installed or not found in PATH.")
+                return False, None
+            except subprocess.TimeoutExpired:
+                logger.error(f"Pre-clean timed out after {timeout} seconds.")
+                return False, None
 
-        logger.debug(f"Return code: {process.returncode}")
-        logger.debug(f"STDOUT:\n{process.stdout}")
-        if process.stderr:
-            logger.warning(f"STDERR:\n{process.stderr}")
+            logger.debug(f"Return code: {process.returncode}")
+            logger.debug(f"STDOUT:\n{process.stdout}")
+            if process.stderr:
+                logger.warning(f"STDERR:\n{process.stderr}")
 
-        if process.returncode != 0:
-            logger.error(f"Pre-clean exited with return code {process.returncode}")
-            return False, None
+            if process.returncode != 0:
+                logger.error(f"Pre-clean exited with return code {process.returncode}")
+                return False, None
 
-        if not re.search(success_pattern, process.stdout, re.IGNORECASE):
-            logger.error("Success message not found in pre-clean output.")
-            return False, None
+            if not re.search(success_pattern, process.stdout, re.IGNORECASE):
+                logger.error("Success message not found in pre-clean output.")
+                return False, None
+
+            # Map the alias's "_PRE" output back to the expected pre_docx name.
+            if alias_path is not None:
+                alias_stem = re.sub(r"\.docx$", "", os.path.basename(alias_path),
+                                    flags=re.IGNORECASE)
+                alias_pre = os.path.join(parent_dir, f"{alias_stem}_PRE.docx")
+                if os.path.isfile(alias_pre):
+                    try:
+                        if os.path.exists(pre_docx):
+                            os.remove(pre_docx)
+                        os.rename(alias_pre, pre_docx)
+                    except OSError as exc:
+                        logger.error(f"Failed to map alias output to {pre_docx}: {exc}")
+                        return False, None
+        finally:
+            if alias_path is not None and os.path.isfile(alias_path):
+                try:
+                    os.remove(alias_path)
+                except OSError:
+                    pass
 
         if not os.path.isfile(pre_docx):
             logger.error(f"Expected pre-clean output not found: {pre_docx}")
